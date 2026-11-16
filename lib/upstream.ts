@@ -129,3 +129,12 @@ export async function callOpenAI(
     };
   }
 }
+
+export const recentFailures: Array<{ status: number; code: string; model: string; at: number }> = [];
+
+export function noteFailure(status: number, code: string, model: string): void {
+  recentFailures.push({ status, code, model, at: Date.now() });
+  if (recentFailures.length > 8) {
+    recentFailures.shift();
+  }
+}

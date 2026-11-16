@@ -45,6 +45,9 @@ export interface CatalogModel {
   id: string;
   free: boolean;
   context_length: number | null;
+  tools?: boolean | null;
+  vision?: boolean | null;
+  json?: boolean | null;
 }
 
 export interface CatalogProvider {
@@ -262,6 +265,9 @@ export function buildCatalog(brief: Brief): CatalogReport {
     id: m.id,
     free: true,
     context_length: m.context_length,
+    tools: m.tools,
+    vision: m.vision,
+    json: m.json,
   }));
   return {
     providers: [
@@ -274,4 +280,20 @@ export function buildCatalog(brief: Brief): CatalogReport {
       },
     ],
   };
+}
+
+export function catalogSummary(report: CatalogReport): { total: number; jsonCapable: number; toolsCapable: number; visionCapable: number } {
+  let total = 0;
+  let jsonCapable = 0;
+  let toolsCapable = 0;
+  let visionCapable = 0;
+  for (const provider of report.providers) {
+    for (const model of provider.models) {
+      total++;
+      if ((model as any).json === true) jsonCapable++;
+      if ((model as any).tools === true) toolsCapable++;
+      if ((model as any).vision === true) visionCapable++;
+    }
+  }
+  return { total, jsonCapable, toolsCapable, visionCapable };
 }

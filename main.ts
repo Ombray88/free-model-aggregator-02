@@ -26,6 +26,21 @@ import {
   type ServedModel,
 } from './lib/wire.ts';
 
+const VERSION = "1.1.0";
+const metrics = {
+  startedAt: Date.now(),
+  requests: 0,
+  byModel: new Map<string, number>(),
+  byStatus: new Map<string, number>(),
+};
+
+function recordMetric(modelId: string, status: number): void {
+  metrics.requests += 1;
+  metrics.byModel.set(modelId, (metrics.byModel.get(modelId) ?? 0) + 1);
+  const s = String(status);
+  metrics.byStatus.set(s, (metrics.byStatus.get(s) ?? 0) + 1);
+}
+
 const PROTOCOL_VERSION = 1;
 const POLL_INTERVAL_MS = 100;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
@@ -127,6 +142,7 @@ async function handleChatOrMessages(
       clientWire === 'anthropic'
         ? anthropicError('invalid_request_error', 'the request body is not one JSON object')
         : openAIError('the request body is not one JSON object', 'invalid_request_error', 'invalid_request');
+    recordMetric('', 400);
     sendJson(res, 400, errBody);
     return;
   }
@@ -140,11 +156,13 @@ async function handleChatOrMessages(
   const failures: { status: number; code: string; model: string }[] = [];
   let triedAny = false;
   let lastError: UpstreamResult | null = null;
+  let lastModelId = '';
 
   while (true) {
     const candidate = router.nextCandidate(requestId, requires);
     if (!candidate) break;
     triedAny = true;
+    lastModelId = candidate.modelId;
 
     const upstreamBody = buildUpstreamBody(clientWire, body, candidate.modelId, stream);
     const result = await callOpenAI(GATEWAY_URL, GATEWAY_KEY, candidate.modelId, upstreamBody, stream);
@@ -177,6 +195,7 @@ async function handleChatOrMessages(
         res.writeHead(200, headers);
         res.end(payload);
       }
+      recordMetric(candidate.modelId, 200);
       return;
     } else {
       lastError = result;
@@ -199,6 +218,7 @@ async function handleChatOrMessages(
       clientWire === 'anthropic'
         ? anthropicError('server_error', 'no free model on the directory meets this request')
         : openAIError('no free model on the directory meets this request', 'server_error', 'service_unavailable');
+    recordMetric('', 503);
     sendJson(res, 503, errBody);
     return;
   }
@@ -215,6 +235,7 @@ async function handleChatOrMessages(
   if (failures.length > 0) {
     errHeaders['x-makefun-upstream-failures'] = JSON.stringify(failures.slice(0, 8));
   }
+  recordMetric(lastModelId, errStatus);
   sendJson(res, errStatus, errBody, errHeaders);
 }
 
@@ -222,6 +243,26 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const url = new URL(req.url || '', 'http://entry');
   const pathname = url.pathname;
   const method = req.method || 'GET';
+
+  if (method === 'GET' && pathname === '/healthz') {
+    sendJson(res, 200, {
+      status: "ok",
+      version: VERSION,
+      models: servedModels().length,
+      uptimeMs: Date.now() - metrics.startedAt,
+      requests: metrics.requests,
+    });
+    return;
+  }
+  if (method === 'GET' && pathname === '/metrics') {
+    sendJson(res, 200, {
+      requests: metrics.requests,
+      byModel: Object.fromEntries(metrics.byModel),
+      byStatus: Object.fromEntries(metrics.byStatus),
+      uptimeMs: Date.now() - metrics.startedAt,
+    });
+    return;
+  }
 
   if (method === 'GET' && pathname === '/v1/models') {
     const hasApiKey = Boolean(req.headers['x-api-key']);
@@ -309,6 +350,10 @@ function poll(server: Server): void {
 }
 
 async function start(): Promise<void> {
+  if (process.argv.includes('--version')) {
+    process.stdout.write(VERSION + '\n');
+    process.exit(0);
+  }
   if (process.argv.includes('--list')) {
     process.stdout.write(JSON.stringify(catalog) + '\n');
     process.exit(0);

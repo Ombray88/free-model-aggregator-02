@@ -85,3 +85,11 @@ export class Router {
     this.cooldowns.add(modelId);
   }
 }
+
+export function routeReport(router: Router, _brief: unknown): { models: string[]; cooled: string[] } {
+  const freeList = (router as any).freeList;
+  const models = Array.isArray(freeList) ? freeList.map((m: any) => m.id) : [];
+  const cooldowns = (router as any).cooldowns;
+  const cooled = cooldowns instanceof Set ? Array.from(cooldowns) : [];
+  return { models, cooled };
+}
