@@ -1,3 +1,4 @@
+// free-model-aggregator-02: live gateway aggregator (Node 22, rating-order routing, per-model failover)
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
   buildCatalog,
