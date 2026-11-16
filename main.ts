@@ -2,6 +2,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
   buildCatalog,
+  catalogSummary,
   freeModels,
   isRecord,
   readBrief,
@@ -9,7 +10,7 @@ import {
   type Json,
   type Requirement,
 } from './lib/providers.ts';
-import { Router } from './lib/router.ts';
+import { Router, routeReport } from './lib/router.ts';
 import {
   buildUpstreamBody,
   buildOpenAIJsonResponse,
@@ -17,7 +18,7 @@ import {
   buildOpenAISseResponse,
   buildAnthropicSseResponse,
 } from './lib/translate.ts';
-import { callOpenAI, isRetryable, type UpstreamResult } from './lib/upstream.ts';
+import { callOpenAI, isRetryable, recentFailures, noteFailure, type UpstreamResult } from './lib/upstream.ts';
 import {
   anthropicError,
   anthropicModelList,
@@ -25,6 +26,11 @@ import {
   openAIModelList,
   type ServedModel,
 } from './lib/wire.ts';
+import {
+  validateChatRequest,
+  validateAnthropicRequest,
+  badRequestBody,
+} from './lib/validate.ts';
 
 const VERSION = "1.1.0";
 const metrics = {
@@ -147,6 +153,13 @@ async function handleChatOrMessages(
     return;
   }
 
+  const validation = clientWire === 'anthropic' ? validateAnthropicRequest(body) : validateChatRequest(body);
+  if (!validation.ok) {
+    recordMetric('', 400);
+    sendJson(res, 400, badRequestBody(validation.error));
+    return;
+  }
+
   const promptEntry = brief.prompts[manifestIndex];
   const requestId = promptEntry ? promptEntry.id : `req_${manifestIndex}`;
   const requires = promptEntry ? promptEntry.requires : requirementsFromBody(body);
@@ -204,6 +217,7 @@ async function handleChatOrMessages(
         code: result.code || String(result.status),
         model: candidate.modelId,
       });
+      noteFailure(result.status, result.code || String(result.status), candidate.modelId);
       if (isRetryable(result.status)) {
         log(`model ${candidate.modelId} failed with retryable status ${result.status} (${result.code || 'error'}): ${result.message}; failing over to next candidate`);
         router.noteFailure(candidate.modelId, result.message);
@@ -261,6 +275,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       byStatus: Object.fromEntries(metrics.byStatus),
       uptimeMs: Date.now() - metrics.startedAt,
     });
+    return;
+  }
+  if (method === 'GET' && pathname === '/catalog') {
+    sendJson(res, 200, catalogSummary(catalog));
+    return;
+  }
+  if (method === 'GET' && pathname === '/routes') {
+    sendJson(res, 200, routeReport(router, brief));
+    return;
+  }
+  if (method === 'GET' && pathname === '/failures') {
+    sendJson(res, 200, { failures: recentFailures });
     return;
   }
 
@@ -361,6 +387,8 @@ async function start(): Promise<void> {
   if (!ENV_URL) {
     throw new Error('MAKEFUN_ENV_URL is not set');
   }
+
+  console.error(`aggregator: catalog ${JSON.stringify(catalogSummary(catalog))}`);
 
   const server = createServer(async (req, res) => {
     try {
